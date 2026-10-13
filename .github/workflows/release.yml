@@ -1,0 +1,64 @@
+name: Release Mirror
+
+# Builds FR2052a Lineage from the private source repo and publishes the zip here.
+# Triggered manually with a version tag, or automatically when a tag is pushed here.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v1.11.0"
+        required: true
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+  SOURCE_REPO: SammySlices/fr2052a-lineage-mvp
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source repo at tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ref: ${{ env.VERSION }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements.txt }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm, cache-dependency-path: frontend/package-lock.json }
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt pyinstaller
+
+      - name: Test the backend
+        working-directory: backend
+        run: python -m pytest -q -p no:warnings
+
+      - name: Build the app
+        run: python packaging/build_release.py --version ${{ env.VERSION }}
+
+      - name: Smoke-test the zip
+        shell: bash
+        run: python packaging/smoke_test.py release/*.zip
+
+      - name: Publish release to mirror repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release delete "$VERSION" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release create "$VERSION" release/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "FR2052a Lineage $VERSION" \
+            --notes "Self-contained FR2052a Lineage app. Download the zip, unzip it, run FR2052a-Lineage.exe. Nothing to install. Drop DSCIT files in data/dscit/ and canonical files in data/canonical/."
